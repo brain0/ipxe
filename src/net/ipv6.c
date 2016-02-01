@@ -68,6 +68,98 @@ ipv6_statistics_family __ip_statistics_family ( IP_STATISTICS_IPV6 ) = {
 	.stats = &ipv6_stats,
 };
 
+/** Entry in the ipv6 policy table */
+struct ipv6_policytable_entry {
+	struct in6_addr address;
+	unsigned int prefix_len;
+	struct in6_addr prefix_mask;
+	unsigned int precedence;
+	unsigned int label;
+};
+
+/** IPv6 policy table according to RFC 6724
+ *
+ * Prefix        Precedence Label
+ * ::1/128               50     0
+ * ::/0                  40     1
+ * ::ffff:0:0/96         35     4
+ * 2002::/16             30     2
+ * 2001::/32              5     5
+ * fc00::/7               3    13
+ * ::/96                  1     3
+ * fec0::/10              1    11
+ * 3ffe::/16              1    12
+ *
+ * The label is used for source address selection.
+ * The precedence and label are used for destination
+ * address selection (not implemented here).
+ */
+static const struct ipv6_policytable_entry policytable[] = {
+	{
+	  .address = { .s6_addr16 = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, htons( 0x0001 ) } },
+	  .prefix_len = 128,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff } },
+	  .precedence = 50,
+	  .label = 0
+	},
+	{
+	  .address = { .s6_addr16 = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 0,
+	  .prefix_mask = { .s6_addr16 = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 40,
+	  .label = 1
+	},
+	{
+	  .address = { .s6_addr16 = { 0x0, 0x0, 0x0, 0x0, 0x0, 0xffff, 0x0, 0x0 } },
+	  .prefix_len = 96,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0x0, 0x0 } },
+	  .precedence = 35,
+	  .label = 4
+	},
+	{
+	  .address = { .s6_addr16 = { htons( 0x2002 ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 16,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 30,
+	  .label = 2
+	},
+	{
+	  .address = { .s6_addr16 = { htons( 0x2001 ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 32,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0xffff, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 5,
+	  .label = 5
+	},
+	{
+	  .address = { .s6_addr16 = { htons( 0xfc00 ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 7,
+	  .prefix_mask = { .s6_addr16 = { htons( 0xfe00 ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 3,
+	  .label = 13
+	},
+	{
+	  .address = { .s6_addr16 = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 96,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0x0, 0x0 } },
+	  .precedence = 1,
+	  .label = 3
+	},
+	{
+	  .address = { .s6_addr16 = { htons( 0xfec0 ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 10,
+	  .prefix_mask = { .s6_addr16 = { 0xffc0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 1,
+	  .label = 11
+	},
+	{
+	  .address = { .s6_addr16 = { htons( 0x3ffe ), 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .prefix_len = 16,
+	  .prefix_mask = { .s6_addr16 = { 0xffff, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } },
+	  .precedence = 1,
+	  .label = 12
+	}
+};
+
 /**
  * Determine debugging colour for IPv6 debug messages
  *
@@ -268,6 +360,184 @@ int ipv6_set_address ( struct net_device *netdev, struct in6_addr *address ) {
 }
 
 /**
+ * Return the policy table entry for the specified address
+ *
+ * @v address		IPv6 address
+ * @ret rc		Policy table entry
+ *
+ * With the default policy table, this function never returns NULL.
+ */
+static const struct ipv6_policytable_entry* ipv6_policytable_get(struct in6_addr *address) {
+	unsigned int i, j;
+	const struct ipv6_policytable_entry* best = NULL;
+	int skip;
+
+	for ( i = 0; i < sizeof( policytable ) / sizeof( policytable[0] ); ++i ) {
+		skip = 0;
+		for ( j = 0; j < ( sizeof ( address->s6_addr32 ) / sizeof ( address->s6_addr32[0] ) ) ; ++j ) {
+			if ( (( address->s6_addr32[j] ^ policytable[i].address.s6_addr32[j])
+			  & policytable[i].prefix_mask.s6_addr32[j] ) != 0 )
+			{
+				skip = 1;
+				break;
+			}
+		}
+		if ( !skip && ( best == NULL || policytable[i].prefix_len > best->prefix_len ) )
+			best = &policytable[i];
+	}
+	return best;
+}
+
+/**
+ * Source address selection rule 1
+ *
+ * @v first		First IPv6 address
+ * @v second		First IPv6 address
+ * @v dest		Destination address
+ * @ret rc		Comparison result
+ *
+ * This function implements the first rule from RFC 6724, section 5. It tests whether
+ * either of the addresses is equal to the destination address.
+ *
+ * If the first address should be preferred over the second, this function returns -1.
+ * If the second address should be preferred over the first, this function returns 1.
+ * If neither the first nor the second address should be preferred over the other, this
+ * function returns 0.
+ */
+static int address_selection_compare_identical(struct ipv6_miniroute *first, struct ipv6_miniroute *second, struct in6_addr *dest)
+{
+	int firstIdentical = IN6_ARE_ADDR_EQUAL( first, dest ),
+	  secondIdentical = IN6_ARE_ADDR_EQUAL( second, dest );
+
+	if (firstIdentical && !secondIdentical)
+		return -1;
+	else if (!firstIdentical && secondIdentical)
+		return 1;
+	else
+		return 0;
+}
+
+/**
+ * Source address selection rule 2
+ *
+ * @v first		First IPv6 address
+ * @v second		First IPv6 address
+ * @v dest		Destination address
+ * @ret rc		Comparison result
+ *
+ * This function implements the second rule from RFC 6724, section 5. It determines
+ * the preferred address by comparing the scope of the first and second address and
+ * the destination.
+ *
+ * We only consider the link-local and global scopes, since all other scopes are
+ * irrelevant for iPXE.
+ *
+ * If the first address should be preferred over the second, this function returns -1.
+ * If the second address should be preferred over the first, this function returns 1.
+ * If neither the first nor the second address should be preferred over the other, this
+ * function returns 0.
+ */
+static int address_selection_compare_scope(struct ipv6_miniroute *first, struct ipv6_miniroute *second, struct in6_addr *dest)
+{
+	int firstLinkLocal = IN6_IS_ADDR_NONGLOBAL( &first->address ),
+	  secondLinkLocal = IN6_IS_ADDR_NONGLOBAL( &second->address ),
+	  destLinkLocal = IN6_IS_ADDR_NONGLOBAL( dest );
+
+	if ( firstLinkLocal && !secondLinkLocal )
+		return destLinkLocal ? -1 : 1;
+	else if ( secondLinkLocal && !firstLinkLocal )
+		return destLinkLocal ? 1 : -1;
+	else
+		return 0;
+}
+
+/**
+ * Source address selection rule 6
+ *
+ * @v first		First IPv6 address
+ * @v second		First IPv6 address
+ * @v dest		Destination address
+ * @ret rc		Comparison result
+ *
+ * This function implements the 6th rule from RFC 6724, section 5. It determines
+ * the preferred address by comparing the policy label of the first and second address
+ * with the destination's policy label.
+ *
+ * If the first address should be preferred over the second, this function returns -1.
+ * If the second address should be preferred over the first, this function returns 1.
+ * If neither the first nor the second address should be preferred over the other, this
+ * function returns 0.
+ */
+static int address_selection_compare_label(struct ipv6_miniroute *first, struct ipv6_miniroute *second, struct in6_addr *dest) {
+	unsigned int labelFirst = ipv6_policytable_get(&first->address)->label,
+	  labelSecond = ipv6_policytable_get(&second->address)->label,
+	  labelDest = ipv6_policytable_get(dest)->label;
+
+	if ( labelFirst == labelDest && labelSecond != labelDest )
+		return -1;
+	else if ( labelFirst != labelDest && labelSecond == labelDest )
+		return 1;
+	else
+		return 0;
+}
+
+/**
+ * Returns the common prefix length of two ipv6 addresses
+ *
+ * @v first		First IPv6 address
+ * @v second		First IPv6 address
+ */
+static unsigned int common_prefix_length(struct in6_addr *first, struct in6_addr *second) {
+	uint64_t common_prefix = ( ( ( (uint64_t)htonl( first->s6_addr32[0] ) ) << 32 ) | (uint64_t)htonl( first->s6_addr32[1] ) ) ^
+	  ( ( ( (uint64_t)htonl( second->s6_addr32[0] ) ) << 32 ) | (uint64_t)htonl( second->s6_addr32[1] ) );
+
+	unsigned int len = 0;
+	while ( common_prefix >> len != 0 )
+		++len;
+
+	return 64 - len;
+}
+
+/**
+ * Source address selection rule 8
+ *
+ * @v first		First IPv6 address
+ * @v second		First IPv6 address
+ * @v dest		Destination address
+ * @ret rc		Comparison result
+ *
+ * This function implements the 8th rule from RFC 6724, section 5. It determines
+ * the preferred address by choosing the address that shares the longest common
+ * prefix with the destination.
+ *
+ * If the first address should be preferred over the second, this function returns -1.
+ * If the second address should be preferred over the first, this function returns 1.
+ * If neither the first nor the second address should be preferred over the other, this
+ * function returns 0.
+ */
+static int address_selection_compare_common_prefix_length(struct ipv6_miniroute *first, struct ipv6_miniroute *second, struct in6_addr *dest) {
+	unsigned int first_common_prefix_length = common_prefix_length(&first->address, dest),
+	  second_common_prefix_length = common_prefix_length(&second->address, dest);
+
+	if ( first_common_prefix_length > second_common_prefix_length )
+		return -1;
+	else if ( second_common_prefix_length > first_common_prefix_length )
+		return 1;
+	else
+		return 0;
+}
+
+/**
+ * Source address selection rules
+ */
+static int (*const source_address_comparison_functions[])(struct ipv6_miniroute*, struct ipv6_miniroute*, struct in6_addr*) = {
+	&address_selection_compare_identical,
+	&address_selection_compare_scope,
+	&address_selection_compare_label,
+	&address_selection_compare_common_prefix_length
+};
+
+/**
  * Perform IPv6 routing
  *
  * @v scope_id		Destination address scope ID (for link-local addresses)
@@ -277,47 +547,68 @@ int ipv6_set_address ( struct net_device *netdev, struct in6_addr *address ) {
  */
 static struct ipv6_miniroute * ipv6_route ( unsigned int scope_id,
 					    struct in6_addr **dest ) {
-	struct ipv6_miniroute *miniroute;
+	struct ipv6_miniroute *current;
+	struct ipv6_miniroute *best = NULL;
+	unsigned int i;
+	int cmp;
 
-	/* Find first usable route in routing table */
-	list_for_each_entry ( miniroute, &ipv6_miniroutes, list ) {
-
+	/* Find route and source address */
+	list_for_each_entry ( current, &ipv6_miniroutes, list ) {
 		/* Skip closed network devices */
-		if ( ! netdev_is_open ( miniroute->netdev ) )
+		if ( ! netdev_is_open ( current->netdev ) )
 			continue;
 
 		/* Skip routing table entries with no usable source address */
-		if ( ! ( miniroute->flags & IPV6_HAS_ADDRESS ) )
+		if ( ! ( current->flags & IPV6_HAS_ADDRESS ) )
 			continue;
 
-		if ( IN6_IS_ADDR_NONGLOBAL ( *dest ) ) {
+		/* Skip all unusable addresses */
+		if ( ( ! IN6_IS_ADDR_NONGLOBAL ( *dest ) || current->netdev->index != scope_id ) &&
+		  ( IN6_IS_ADDR_NONGLOBAL ( *dest ) || ( ! ipv6_is_on_link ( current, *dest ) && ! ( current->flags & IPV6_HAS_ROUTER ) ) ) )
+			continue;
 
-			/* If destination is non-global, and the scope ID
-			 * matches this network device, then use this route.
+		if ( best == NULL )
+		{
+			/* There is no previous best address, use the current one */
+			best = current;
+		}
+		else
+		{
+			/* Compare this address to the previous best
+			 *
+			 * If the current address is strictly better than the previous best, use it.
+			 * Otherwise, keep the previous best address.
 			 */
-			if ( miniroute->netdev->index == scope_id )
-				return miniroute;
-
-		} else {
-
-			/* If destination is an on-link global
-			 * address, then use this route.
-			 */
-			if ( ipv6_is_on_link ( miniroute, *dest ) )
-				return miniroute;
-
-			/* If destination is an off-link global
-			 * address, and we have a default gateway,
-			 * then use this route.
-			 */
-			if ( miniroute->flags & IPV6_HAS_ROUTER ) {
-				*dest = &miniroute->router;
-				return miniroute;
+			for ( i = 0; i < sizeof(source_address_comparison_functions) / sizeof(source_address_comparison_functions[0]); ++i )
+			{
+				cmp = source_address_comparison_functions[i]( best, current, *dest );
+				if ( cmp < 0 )
+				{
+					/* The previous best address is strictly better than the current one in this comparison. */
+					break;
+				}
+				else if ( cmp > 0 )
+				{
+					/*
+					 * The current address is strictly beter than the previous best in this comparison. Use the current
+					 * address as new best address.
+					 */
+					best = current;
+					break;
+				}
 			}
 		}
 	}
 
-	return NULL;
+	if ( best != NULL )
+	{
+		/* We found an address. Check if we need to use a router. */
+		if ( best->flags & IPV6_HAS_ROUTER &&
+		  ! ( IN6_IS_ADDR_NONGLOBAL ( *dest ) || ipv6_is_on_link ( best, *dest ) ) )
+			*dest = &best->router;
+	}
+
+	return best;
 }
 
 /**
