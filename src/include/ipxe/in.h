@@ -73,6 +73,12 @@ struct in6_addr {
 	( IN6_IS_ADDR_LINKLOCAL (addr) || 					\
 	  ( IN6_IS_ADDR_MULTICAST (addr) && ( *( ( const uint16_t * ) (addr) ) & htons( 0x000f ) ) == htons( 0x0002 ) ) )
 
+#define IN6_ARE_ADDR_EQUAL( first, second )						\
+	( ( ( ( const uint32_t * ) (first) )[0] ) == ( ( ( const uint32_t * ) (second) )[0] ) && \
+	  ( ( ( const uint32_t * ) (first) )[1] ) == ( ( ( const uint32_t * ) (second) )[1] ) && \
+	  ( ( ( const uint32_t * ) (first) )[2] ) == ( ( ( const uint32_t * ) (second) )[2] ) && \
+	  ( ( ( const uint32_t * ) (first) )[3] ) == ( ( ( const uint32_t * ) (second) )[3] ) )
+
 /**
  * IPv4 socket address
  */
